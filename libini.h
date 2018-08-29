@@ -6,7 +6,7 @@
 
 class INIObject
 {
-    private:
+    public:
         struct INIItem
         {
             std::string item;
@@ -20,7 +20,7 @@ class INIObject
                 std::vector<INIObject::INIItem> data;
             
             public:
-                INISection() { data.clear(); }
+                INISection() {}
                 INISection(const std::string &topic, std::vector<INIObject::INIItem> &items);
                 
                 std::string& operator() (const std::string &item, size_t skipItem = 0);
@@ -53,10 +53,12 @@ class INIObject
                 bool exists(const std::string &item, size_t skipItem = 0);
         };
         
+    private:
+        
         std::vector<INISection> data;
     
     public:
-        INIObject() { data.clear(); }
+        INIObject() {}
         
         INIObject(const std::string &filepath);
         

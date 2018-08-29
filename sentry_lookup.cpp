@@ -2,12 +2,15 @@
 #include <iostream>
 #include <fstream>
 #include <regex>
+#include <unistd.h>
 #include "libini.h"
 
 // [{"required_test":0,"date":"Saturday, August 18, 2018  5:26AM MST","text":"Do not test today","transaction_key":"ffffffff"}]
 
 #define DEFAULT_CONF    "users.conf"
-#define VERSION         "0.1.1"
+#define DEFAULT_TRIES   10
+#define DEFAULT_SLEEP   15
+#define VERSION         "0.1.5"
 
 std::string cap(std::string input);
 bool stob(const std::string &str);
@@ -19,6 +22,7 @@ void usageInfo(char *cmd);
 
 bool notifyOff          =   false;
 bool verbose            =   false;
+std::string logFile     =   "";
 
 int main(int argc, char *argv[])
 {
@@ -35,7 +39,12 @@ int main(int argc, char *argv[])
     std::string def_lang = settings->find("lang");
     bool def_notifyNoTest = stob(settings->find("notify_regardless"));
     bool def_notifyError = stob(settings->find("notify_error"));
+    int def_tries = std::stoi(settings->find("tries"));
+    int def_sleep = std::stoi(settings->find("sleep_time"));
+    if (def_sleep > 0)
+        def_sleep--;
     conf.erase(settings);
+    bool needSleep = false;
     
     for (auto it = conf.begin(), ite = conf.end();it != ite;++it)
     {
@@ -49,25 +58,46 @@ int main(int argc, char *argv[])
             notifyError = stob((*it)("notify_error"));
         std::string email = it->topic();
         std::string name = (*it)("name");
-        std::string data = "curl -s -d \"phone=" + (*it)("phone") + "&last_name=" + name + "&ivr_code=" + (*it)("id") + "&lang=" + lang + "\" -X POST https://sentry.cordanths.com/Sentry/WebCheckin/Log > result.out";
-        system(data.c_str());
+        std::string cmd = "curl -s -d \"phone=" + (*it)("phone") + "&last_name=" + name + "&ivr_code=" + (*it)("id") + "&lang=" + lang + "\" -X POST https://sentry.cordanths.com/Sentry/WebCheckin/Log > result.out";
         if (it->exists("nickname"))
             name = (*it)("nickname");
         else
             name = cap(name);
         if (it->exists("prefix"))
             name = (*it)("prefix") + " " + name;
-        data.clear();
-        std::ifstream result ("result.out");
-        if (result.is_open())
+        std::string data;
+        for (int tries = def_tries;tries > 0;--tries)
         {
-            data.clear();
-            result.seekg(0, std::ios::end);   
-            data.reserve(result.tellg());
-            result.seekg(0, std::ios::beg);
-            data.assign((std::istreambuf_iterator<char>(result)),std::istreambuf_iterator<char>());
-            result.close();
-            data = data.substr(0,data.find('\r'));
+            if (needSleep)
+                sleep(def_sleep);
+            else if (def_sleep)
+                needSleep = true;
+            system(cmd.c_str());
+            sleep(1);
+            std::ifstream result ("result.out");
+            if (result.is_open())
+            {
+                result.seekg(0, std::ios::end);   
+                data.reserve(result.tellg());
+                result.seekg(0, std::ios::beg);
+                data.assign((std::istreambuf_iterator<char>(result)),std::istreambuf_iterator<char>());
+                result.close();
+                data = data.substr(0,data.find('\r'));
+            }
+            if (data.size() > 0)
+                break;
+        }
+        if (data.size() > 0)
+        {
+            if (logFile.size() > 0)
+            {
+                std::ofstream logOut (logFile,std::ofstream::app);
+                if (logOut.is_open())
+                {
+                    logOut<<name<<":"<<email<<"<<"<<data<<std::endl;
+                    logOut.close();
+                }
+            }
             
             std::regex ptrn ("\"error_msg\":\\s*\"(.+?)\"");
             std::smatch ml;
@@ -114,9 +144,9 @@ int main(int argc, char *argv[])
         else
         {
             if ((!notifyOff) && (notifyError) && (email != "-"))
-                system(("echo \"Unable to connect to the sentry testing server!\" | mail -s \"" + name + ", an Error has Occured!\" " + email).c_str());
+                system(("echo \"Failed to connect to the sentry testing server after " + std::to_string(def_tries) + " tries!\" | mail -s \"" + name + ", an Error has Occured!\" " + email).c_str());
             if ((verbose) || (email == "-"))
-                std::cout<<name<<": Unable to connect to the sentry testing server!\n"<<std::endl;
+                std::cout<<name<<": Failed to connect to the sentry testing server after "<<def_tries<<" tries!\n"<<std::endl;
         }
     }
     return 0;
@@ -151,17 +181,21 @@ std::string btos(bool cond)
 
 int handleSwitches(INIObject &settings, std::string config, int argc, char *argv[])
 {
-    bool noConf             =   false;
+    bool        noConf      =   false;
     std::string lang        =   "en";
-    bool noTest             =   false;
-    bool error              =   true;
-    bool save               =   false;
-    bool addUser            =   false;
-    bool single             =   false;
-    bool langSet            =   false;
-    bool noTestSet          =   false;
-    bool errorSet           =   false;
-    bool noLookup           =   false;
+    bool        noTest      =   false;
+    bool        error       =   true;
+    bool        save        =   false;
+    bool        addUser     =   false;
+    bool        single      =   false;
+    int         tries       =   DEFAULT_TRIES;
+    int         sleep       =   DEFAULT_SLEEP;
+    bool        langSet     =   false;
+    bool        noTestSet   =   false;
+    bool        errorSet    =   false;
+    bool        noLookup    =   false;
+    bool        triesSet    =   false;
+    bool        sleepSet    =   false;
     int arg = 1;
     for (;arg < argc;arg++)
     {
@@ -235,6 +269,57 @@ int handleSwitches(INIObject &settings, std::string config, int argc, char *argv
         }
         else if (strcmp(argv[arg],"--no-lookup") == 0)
             noLookup = true;
+        else if (strcmp(argv[arg],"--log") == 0)
+        {
+            if (++arg >= argc)
+            {
+                std::cerr<<"Command line switch '--log' missing log file argument. See '"<<argv[0]<<" --help'."<<std::endl;
+                return 2;
+            }
+            logFile = argv[arg];
+        }
+        else if (strcmp(argv[arg],"--tries") == 0)
+        {
+            if (++arg >= argc)
+            {
+                std::cerr<<"Command line switch '--tries' missing digit argument. See '"<<argv[0]<<" --help'."<<std::endl;
+                return 2;
+            }
+            bool gotSet = isdigit(argv[arg][0]);
+            if (gotSet)
+            {
+                tries = atoi(argv[arg]);
+                if (tries < 1)
+                    gotSet = false;
+                triesSet = true;
+            }
+            if (!gotSet)
+            {
+                std::cerr<<"Command line switch '--tries': Invalid digit: '"<<argv[arg]<<"'. See '"<<argv[0]<<" --help'."<<std::endl;
+                return 2;
+            }
+        }
+        else if (strcmp(argv[arg],"--sleep-time") == 0)
+        {
+            if (++arg >= argc)
+            {
+                std::cerr<<"Command line switch '--sleep-time' missing seconds argument. See '"<<argv[0]<<" --help'."<<std::endl;
+                return 2;
+            }
+            bool gotSet = isdigit(argv[arg][0]);
+            if (gotSet)
+            {
+                sleep = atoi(argv[arg]);
+                if (sleep < 0)
+                    gotSet = false;
+                sleepSet = true;
+            }
+            if (!gotSet)
+            {
+                std::cerr<<"Command line switch '--sleep-time': Invalid seconds argument: '"<<argv[arg]<<"'. See '"<<argv[0]<<" --help'."<<std::endl;
+                return 2;
+            }
+        }
         else
             std::cerr<<"Ignoring unknown command switch '"<<argv[arg]<<"'. See '"<<argv[0]<<" --help'."<<std::endl;
     }
@@ -262,8 +347,24 @@ int handleSwitches(INIObject &settings, std::string config, int argc, char *argv
             (*opt)("lang") = lang;
         if ((noTestSet) || (!opt->exists("notify_regardless")))
             (*opt)("notify_regardless") = btos(noTest);
-        if ((errorSet) || (!settings.exists("notify_error")))
+        if ((errorSet) || (!opt->exists("notify_error")))
             (*opt)("notify_error") = btos(error);
+        if ((triesSet) || (!opt->exists("tries")))
+            (*opt)("tries") = std::to_string(tries);
+        else
+        {
+            std::string t = opt->find("tries");
+            if ((!isdigit(t[0])) || (std::stoi(t) < 1))
+                (*opt)("tries") = std::to_string(DEFAULT_TRIES);
+        }
+        if ((sleepSet) || (!opt->exists("sleep_time")))
+            (*opt)("sleep_time") = std::to_string(sleep);
+        else
+        {
+            std::string s = opt->find("sleep_time");
+            if ((!isdigit(s[0])) || (std::stoi(s) < 0))
+                (*opt)("sleep_time") = std::to_string(DEFAULT_SLEEP);
+        }
     }
     else
     {
@@ -271,6 +372,8 @@ int handleSwitches(INIObject &settings, std::string config, int argc, char *argv
         auto opt = settings.topic_it("settings");
         (*opt)("notify_regardless") = btos(noTest);
         (*opt)("notify_error") = btos(error);
+        (*opt)("tries") = std::to_string(tries);
+        (*opt)("sleep_time") = std::to_string(sleep);
     }
     if (save)
     {
@@ -317,7 +420,7 @@ int handleSwitches(INIObject &settings, std::string config, int argc, char *argv
     }
     else if (single)
     {
-        std::cerr<<"Error: '--single' switch set without providing user info.\n"<<std::endl;
+        std::cerr<<"Error: '--single' switch set without providing user info.\n";
         usageInfo(argv[0]);
         return 2;
     }
@@ -328,38 +431,40 @@ int handleSwitches(INIObject &settings, std::string config, int argc, char *argv
 
 void versionInfo()
 {
-    std::cout<<"\nVERSION\n\tAutomated Sentry Testing Notification System v"<<VERSION<<" by nigel."<<std::endl;
+    std::cout<<"\nVERSION\n\tAutomated Sentry Testing Notification System v"<<VERSION<<" by nigel.\n"<<std::endl;
 }
 
 void helpInfo(char *cmd)
 {
     versionInfo();
-    std::cout<<std::endl;
+    std::cout<<"DESCRIPTION\n\tThis program will lookup drug testing information for an individual or\n\tset of individuals and email the results.\n";
     usageInfo(cmd);
-    std::cout<<std::endl;
-    std::cout<<"DESCRIPTION\n\tThis program will lookup drug testing information for an individual or\n\tset of individuals and email the results.\n\nOPTIONS\n"
+    std::cout<<"OPTIONS\n"
              <<"\t--\t\t\tMark the end of the switches. Useful if your\n\t\t\t\temail begins with '--'.\n\n"
              <<"\t--help\t\t\tDisplay this help message and exit.\n\n"
              <<"\t--version\t\tOutput the version and exit.\n\n"
              <<"\t--add-user\t\tSave the user information provided to the\n\t\t\t\tconfiguration file.\n\n"
              <<"\t--config\t\tSet the configuration file to the argument\n\t\t\t\tdirectly following this switch.\n\n\t\t`"<<cmd<<" --config \"~/path/to/config\"`\n\n"
-             <<"\t--lang\t\t\tSet the language, valid options: 'en' or 'es'.\n\n"
+             <<"\t--lang\t\t\tSet the language, valid options: 'en' or 'es'.\n\t\t\t\t(Default: en)\n\n"
              <<"\t--no-config\t\tDo not load the config file. If settings are not\n\t\t\t\tdefined with switches the defaults will be used.\n\n"
              <<"\t--no-lookup\t\tDoes not actually lookup any test results,\n\t\t\t\tuseful for modifying the configuration file\n\t\t\t\twithout running the program.\n\n"
-             <<"\t--notify-error\t\tEnables notifying on error (Default).\n\n"
+             <<"\t--notify-error\t\tEnables notifying on error. (Default)\n\n"
              <<"\t--notify-error-off\tDisables notifying on error.\n\n"
              <<"\t--notify-off\t\tDisables all email notifications for the current\n\t\t\t\tsession.\n\n"
              <<"\t--notify-regardless\tEnables notifications even when no test is\n\t\t\t\trequired.\n\n"
-             <<"\t--notify-regardless-off\tDisables notifications when no test is required\n\t\t\t\t(Default).\n\n"
-             <<"\t--save\t\t\tSave the current settings to the configuration\n\t\t\t\tfile. Users are not affected.\n\n"
-             <<"\t--single\t\tCan only be used if a user is passed in the\n\t\t\t\targuments. Only tests for the defined user.\n\n"
+             <<"\t--notify-regardless-off\tDisables notifications when no test is required.\n\t\t\t\t(Default)\n\n"
+             <<"\t--save\t\t\tSave the current settings to the configuration\n\t\t\t\tfile. Users are not affected unless combined\n\t\t\t\twith --no-config.\n\n"
+             <<"\t--single\t\tOnly tests for the defined user. Can only be\n\t\t\t\tused if a user is passed in the arguments.\n\n"
+             <<"\t--sleep-time\t\tSet the number of seconds to wait between\n\t\t\t\tlooking up clients or retrying. (Default: "<<DEFAULT_SLEEP<<")\n\n"
+             <<"\t--tries\t\t\tSet the number of times to attempt looking up\n\t\t\t\ta client. (Default: "<<DEFAULT_TRIES<<")\n\n"
              <<"\t--verbose\t\tAlways output test results to stdout.\n\n"
-             <<"EXIT STATUS\n\tNormal exit status is 0. 1 if an error occurs with the configuration.\n\tEven if test results are invalid or a connection is not made the exit\n\tstatus is 0.\n\n";
+             <<"EXIT STATUS\n\tNormal exit status is 0. 1 if an error occurs with the configuration.\n\tEven if test results are invalid or a connection is not made the exit\n\tstatus is 0.\n"<<std::endl;
 }
 
 void usageInfo(char *cmd)
 {
-    std::cout<<"USAGE\n\t"<<cmd<<" [OPTIONS] [<EMAIL> <PHONE_NUMBER> <LAST_NAME> <ID_NUMBER>]\n\tEMAIL can be '-' to send output to stdout.\n\tPHONE_NUMBER is the testing number of the agency you report to.\n"
-             <<"\n\t\t'"<<cmd<<" --help' for more info."<<std::endl;
+    std::cout<<"\nUSAGE\n\t"<<cmd<<" [OPTIONS] [<EMAIL> <PHONE_NUMBER> <LAST_NAME> <ID_NUMBER>]\n\tEMAIL can be '-' to send output to stdout.\n\tPHONE_NUMBER is the testing number of the agency you report to.\n"
+             <<"\n\t\t'"<<cmd<<" --help' for more info.\n"<<std::endl;
 }
+
 

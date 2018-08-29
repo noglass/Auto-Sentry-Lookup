@@ -453,12 +453,12 @@ int INIObject::erase(const std::string &topic, size_t item, size_t skipTopic)
 
 std::vector<INIObject::INISection>::iterator INIObject::erase(std::vector<INIObject::INISection>::iterator it)
 {
-    data.erase(it);
+    return data.erase(it);
 }
 
 std::vector<INIObject::INISection>::iterator INIObject::erase(std::vector<INIObject::INISection>::iterator first, std::vector<INIObject::INISection>::iterator last)
 {
-    data.erase(first,last);
+    return data.erase(first,last);
 }
 
 bool INIObject::exists(const std::string &topic, size_t skipTopic)
